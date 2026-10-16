@@ -144,7 +144,26 @@ bash start-a-new-project.sh
 bash start-a-new-project.sh
 ```
 
-2. Follow the on-screen terminal instructions carefully. Once complete, Pi will launch in your project directory and be ready to use.
+2. Follow the on-screen terminal instructions carefully.
+
+3. When setup completes, Pi launches inside your project folder, and a fresh
+   terminal shell opens where `pi` and `node` work right away. When you're done
+   working, type `exit` — your original window may not know about `pi` yet (the
+   script can't change an already-running window); just open a new window after
+   that, and every future window will have `pi` automatically.
+
+---
+
+## Skills: what they are and how to run them
+
+* All class skills are installed automatically. Private, per-student skills can
+  be added by placing a folder named `ryans-ai-agent-skills` (containing one
+  folder per skill, each with a `SKILL.md` file) next to the setup script
+  before running it — it is installed, then removed once the copy succeeds.
+* Shared skills always come from the class skills repository, refreshed on
+  every run — you always have the latest.
+* When Pi starts, it greets you with every installed skill (name + description).
+  To run one, type `/` followed by the skill name, for example `/morning-brief`.
 
 ---
 
@@ -163,6 +182,8 @@ bash start-a-new-project.sh
 * Good news: you usually don't have to attach anything. The setup script
   automatically uploads its installation log to this repository's Issues page
   (titles start with `[auto]`) when it finishes, and again if something fails.
+  Every log also records the script revision it ran under — the first thing to
+  check when asking for help.
   Just tell whoever is helping you roughly when you ran the script.
 * If Pi fails to launch because of a missing Ollama API key: visit
   <https://ollama.com/settings/keys>, click **Create API Key**, and paste it
