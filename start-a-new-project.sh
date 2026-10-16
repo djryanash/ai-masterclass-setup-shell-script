@@ -985,7 +985,19 @@ elif [ -t 0 ]; then
   else
     info "Launching Pi in $PROJECT_DIR — quitting Pi (ctrl+c/ctrl+d) returns you here."
     # Child process, never exec: quitting Pi must not end this script's session.
-    pi || true
+    # CRITICAL: the install-log tee (exec > >(tee ...) 2>&1) replaced this
+    # shell's stdout/stderr with a PIPE. Pi is a full-screen TUI and exits
+    # instantly, printing nothing, when its stdout is not a real terminal — a
+    # real-run bug found in Docker testing (16 Oct). Re-attach the CHILD's
+    # stdio to the controlling terminal for the pi process only; this shell
+    # keeps its logged pipes. stdin of the script was never redirected, but
+    # /dev/tty is used for all three so pi behaves exactly as if typed by hand.
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      pi </dev/tty >/dev/tty 2>&1 || true
+    else
+      warn "no controlling terminal — Pi may fail to render; starting it anyway"
+      pi || true
+    fi
     info "Pi exited. Relaunch any time with:  cd \"$PROJECT_DIR\" && pi"
     # A child script cannot modify the parent shell's PATH: if this terminal
     # predates the first setup, 'pi' stays invisible there until it re-reads
