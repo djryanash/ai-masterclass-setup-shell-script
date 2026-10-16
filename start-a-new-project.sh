@@ -41,6 +41,8 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
+SCRIPT_REV="2026-10-16C"             # bump on every script change; first thing to ask a student
+                                      # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
 PI_INSTALL_FLAGS="--ignore-scripts"   # official install form; pi needs no lifecycle scripts
@@ -228,7 +230,7 @@ if [ "$DRY_RUN" = 0 ]; then
   fi
   : > "$LOG_FILE" 2>/dev/null || { LOG_FILE="$HOME/start-a-new-project-installation.log"; : > "$LOG_FILE"; }
   {
-    echo "=== install-log: start-a-new-project.sh ==="
+    echo "=== install-log: start-a-new-project.sh (rev $SCRIPT_REV) ==="
     echo "started: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
     echo "user: $(id -un 2>/dev/null || id -u)   home: $HOME   invoked from: $PWD"
     echo "bash: $BASH_VERSION"
@@ -242,6 +244,7 @@ if [ "$DRY_RUN" = 0 ]; then
   } >> "$LOG_FILE"
   exec > >(tee -a "$LOG_FILE") 2>&1
   info "verbose install log: $LOG_FILE — attach this file when asking for help"
+  info "script revision: $SCRIPT_REV — if this line is missing from a student's log, they ran an old copy of the script"
   # NOTE is appended DIRECTLY into the log file (not via the tee pipe): on a
   # fatal exit tee's buffered tail races with log_scrub's rewrite, and the
   # reason the run died was getting lost (seen live 16 Oct — log ended at the
