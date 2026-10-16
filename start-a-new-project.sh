@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16H"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16I"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -1153,12 +1153,40 @@ fi
 # GitHub caps issue bodies at ~64KB. Best effort: any failure is silent.
 TELEMETRY_REPO="djryanash/ai-masterclass-setup-shell-script"
 TELEMETRY_URL=""
+log_telemetry_fallback() { # no gh / not authed (failed before step 4): pre-filled browser issue
+  # ASCII-only body in the URL (raw UTF-8 em-dashes in queries are flaky)
+  trim_lines() { LC_ALL=C tr -cd '\11\12\40-\176' < "$1" | awk "{ if (length(\$0)>150) print substr(\$0,1,150) \" [cut]\"; else print }"; }
+  local body="$LOG_FILE.issue-body.txt"
+  {
+    trim_lines "$LOG_FILE" | head -n 15
+    printf '\n... MIDDLE OF THE LOG ELIDED (the full log is on this machine) ...\n\n'
+    trim_lines "$LOG_FILE" | tail -n 40
+  } > "$body" 2>/dev/null || return 0
+  # percent-encode for a query string; browsers accept a few KB
+  local body_enc
+  body_enc="$( { head -c 6000 "$body"; } | tr '\n' '\001' | sed -e 's/%/%25/g' -e 's/"/%22/g' -e 's/#/%23/g' -e 's/&/%26/g' -e 's/ /%20/g' -e 's/</%3C/g' -e 's/>/%3E/g' | tr '\001' '\n' | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g' )"
+  local title_enc
+  title_enc="$( printf '%s' "[auto] setup FAILED early (before GitHub login) — rev $SCRIPT_REV · $OS_TAG · exit ${_telemetry_exit:-0}" | LC_ALL=C tr -cd '\11\12\40-\176' | sed -e 's/%/%25/g' -e 's/&/%26/g' -e 's/ /%20/g' )"
+  local url="https://github.com/$TELEMETRY_REPO/issues/new?title=$title_enc&body=$body_enc"
+  printf '%s\n' "$url" > "$LOG_FILE.url"
+  printf '\n'
+  printf '  %s=========================== WE NEED YOUR HELP ===========================%s\n' "$B" "$N"
+  printf '  The setup FAILED before GitHub was connected, so the log could not be\n'
+  printf '  uploaded automatically. Please do this (1 minute, your phone works):\n'
+  printf '    1. Open this link: %s\n' "$url"
+  printf '    2. Sign in to github.com if asked (an account is free)\n'
+  printf '    3. Click the green "Submit new issue" button\n'
+  printf '  The log link is also saved in: %s.url\n' "$LOG_FILE"
+  if [ "$IS_MAC" = 1 ]; then open "$url" 2>/dev/null && printf '  (that link should have opened in your browser just now)\n'; fi
+  printf '  %s=========================================================================%s\n' "$B" "$N"
+}
+
 log_telemetry() {
   if [ "$TELEMETRY_DONE" = 1 ]; then return 0; fi
   TELEMETRY_DONE=1
   if [ "$DRY_RUN" = 1 ] || [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then return 0; fi
-  if ! have gh; then return 0; fi
-  if ! gh auth status >/dev/null 2>&1; then return 0; fi
+  if ! have gh; then log_telemetry_fallback; return 0; fi
+  if ! gh auth status >/dev/null 2>&1; then log_telemetry_fallback; return 0; fi
   # long progress-bar lines are capped so the body stays readable and small
   trim_lines() { awk '{ if (length($0)>300) print substr($0,1,300) " [line truncated]"; else print }' "$1"; }
   local body="$LOG_FILE.issue"
