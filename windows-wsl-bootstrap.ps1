@@ -9,7 +9,7 @@
 # in the 13 Oct 2026 class ("WSL2 is not supported with your current
 # machine configuration"). All steps are idempotent.
 # After this script: RESTART, open Ubuntu, create your UNIX user, then run
-# class-setup.sh inside Ubuntu.
+# start-a-new-project.sh inside Ubuntu.
 # =====================================================================
 
 $ErrorActionPreference = "Continue"
@@ -90,9 +90,9 @@ Write-Host "  The features take effect only after a full restart." -ForegroundCo
 Write-Host "  After restarting:" -ForegroundColor Green
 Write-Host "    1. Open 'Ubuntu' from the Start menu (it will ask for a UNIX username + password"
 Write-Host "       - remember that password; sudo needs it inside class scripts)"
-Write-Host "    2. Put class-setup.sh into your Linux home folder and run it:"
+Write-Host "    2. Put start-a-new-project.sh into your Linux home folder and run it:"
 Write-Host "         cd ~"
-Write-Host "         bash class-setup.sh"
+Write-Host "         bash start-a-new-project.sh"
 Write-Host ""
 $ans = Read-Host "Restart this computer NOW? (y/n)"
 if ($ans -eq "y") {

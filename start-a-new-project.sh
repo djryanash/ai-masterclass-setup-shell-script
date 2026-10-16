@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # ============================================================================
 # start-a-new-project.sh — student machine setup (macOS + Linux/WSL)
-# (was start-a-new-website.sh; renamed 15 Oct)
+# (earlier iterations were start-a-new-website.sh and versioned copies
+#  -1..-4; full trail in git history. Latest evolution 16 Oct: installation
+#  log lives in the folder you ran this from, project picker for existing
+#  projects, Pi refuses to launch without an Ollama API key)
 #
 # Installs the full taught toolchain in the class order, pre-empts the common
 # student-machine failures (missing build tools, old Node, missing provider
@@ -25,12 +28,14 @@
 #   bash start-a-new-project.sh         # full setup (interactive)
 #   bash start-a-new-project.sh --dry-run   # print what it would do, change nothing
 #   bash start-a-new-project.sh --log=/path  # real runs write a verbose install log
-#                                            # (default: ~/install-log.txt) — attach it
+#                                            # (default: start-a-new-project-installation.log
+#                                            #  in the folder you ran this from) — attach it
 #                                            # when asking for help
 #
 # Tested: syntax + --dry-run on Linux and simulated macOS branch; logging
-# mechanism + excerpt tests 16 Oct. Do one live pass on a fresh Mac and a
-# fresh WSL before class.
+# mechanism + excerpt tests 16 Oct; (installation-log rename, project picker,
+# key-gated Pi launch, Vercel link check) 16 Oct. Do one live pass on a fresh
+# Mac and a fresh WSL before class.
 # ============================================================================
 
 set -euo pipefail
@@ -78,6 +83,91 @@ pause() { msg="${1:-continue}"; if [ -t 0 ] && [ "$DRY_RUN" = 0 ]; then
 ask()   { if [ -t 0 ] && [ "$DRY_RUN" = 0 ]; then read -r -p "  $1" "$2"; else printf '  (non-interactive) defaulting %s to: %s\n' "$2" "${!2}"; fi; }
 run()   { if [ "$DRY_RUN" = 1 ]; then info "[dry-run] $*"; else printf '  + %s\n' "$*"; "$@"; fi; }
 have()  { command -v "$1" >/dev/null 2>&1; }
+
+ensure_ollama_key() { # idempotent: already in env, already saved in profile, or prompt+save
+  # Pi cannot reach the cloud model without OLLAMA_API_KEY. Called from the
+  # credentials step AND again at the Pi-launch gate — a no-op whenever the
+  # key is already set, so the gate is the single enforcement point.
+  if [ -n "${OLLAMA_API_KEY:-}" ]; then
+    ok "OLLAMA_API_KEY already in this shell's environment — skipping the key prompt"
+    return 0
+  fi
+  PROFILE_FILE="$HOME/.bashrc"; [ "${IS_MAC:-0}" = 1 ] && PROFILE_FILE="$HOME/.zshrc"
+  SAVED_KEY_LINE="$(grep -h '^export OLLAMA_API_KEY=' "$PROFILE_FILE" 2>/dev/null | tail -1 || true)"
+  if [ -n "$SAVED_KEY_LINE" ]; then
+    # The line was written by this script (safely quoted); reuse it instead of
+    # asking the user to paste the key again on a re-run/new project.
+    eval "$SAVED_KEY_LINE"
+    export OLLAMA_API_KEY
+    ok "OLLAMA_API_KEY loaded from $PROFILE_FILE — no key prompt needed"
+    return 0
+  fi
+  if [ -t 0 ]; then
+    cat <<KEYPASTE
+
+  --- Ollama API key needed (Pi cannot reach the cloud model without it) ------
+    1. Open   https://ollama.com/settings/keys
+    2. Click  "Create API Key"
+    3. Copy the key and paste it below
+KEYPASTE
+    printf '  Paste your Ollama API key (input hidden): '
+    read -rs OLLAMA_KEY_INPUT; printf '\n'
+    OLLAMA_KEY_INPUT="$(printf '%s' "$OLLAMA_KEY_INPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [ -z "$OLLAMA_KEY_INPUT" ]; then
+      warn "no key entered — Pi will NOT be launched without one. Get it at https://ollama.com/settings/keys (click \"Create API Key\"), then re-run, or before launching pi run:  export OLLAMA_API_KEY=\"<your-key>\""
+      return 1
+    fi
+    export OLLAMA_API_KEY="$OLLAMA_KEY_INPUT"
+    printf '\n# Ollama API key — used by Pi (ollama-cloud provider)\nexport OLLAMA_API_KEY=%q\n' "$OLLAMA_KEY_INPUT" >> "$PROFILE_FILE"
+    ok "OLLAMA_API_KEY exported and saved to $PROFILE_FILE — all future terminals auto-load it; Pi picks it up from the environment (no /login)"
+    unset OLLAMA_KEY_INPUT
+    return 0
+  fi
+  warn "non-interactive run: put the key in the environment before launching pi (export OLLAMA_API_KEY=...)"
+  return 1
+}
+
+pick_project_menu() { # pick_project_menu "name1\nname2\n..." — prints the picked folder name, or __NEW__
+  # Up/down + Enter menu for a terminal; direct number keys 1-9 also work and
+  # double as the numbered-list fallback. Bash-3.2-safe (no mapfile/no assoc
+  # arrays): macOS ships 3.2 and this script supports it everywhere else.
+  __PM_CHOICES="$1"
+  PM_N=0
+  while IFS= read -r __PM_LINE; do
+    [ -n "$__PM_LINE" ] || continue
+    PM_ITEMS[$PM_N]="$__PM_LINE"; PM_N=$((PM_N+1))
+  done <<EOF
+$__PM_CHOICES
+New project
+EOF
+  PM_TOTAL=$PM_N
+  PM_SEL=$((PM_TOTAL-1))   # default highlight: "New project"
+  printf '  Existing project(s) found in this folder — up/down arrows, Enter to choose:\n'
+  while :; do
+    PM_I=0
+    while [ "$PM_I" -lt "$PM_TOTAL" ]; do
+      if [ "$PM_I" -eq "$PM_SEL" ]; then
+        printf '  %s> %s%s%s\n' "$B" "$G" "${PM_ITEMS[$PM_I]}" "$N"
+      else
+        printf '    %s\n' "${PM_ITEMS[$PM_I]}"
+      fi
+      PM_I=$((PM_I+1))
+    done
+    read -rsn1 PM_KEY
+    case "$PM_KEY" in
+      ""|$'\n'|$'\r') break ;;                        # Enter
+      $'\033') read -rsn2 PM_KEY                       # arrow: "[A" up, "[B" down
+               case "$PM_KEY" in
+                 '[A') PM_SEL=$(( (PM_SEL+PM_TOTAL-1) % PM_TOTAL )) ;;
+                 '[B') PM_SEL=$(( (PM_SEL+1) % PM_TOTAL )) ;;
+               esac ;;
+      [1-9]) PM_J=$((PM_KEY-1))
+             if [ "$PM_J" -lt "$PM_TOTAL" ]; then PM_SEL=$PM_J; break; fi ;;
+    esac
+    printf '\033[%dA' "$PM_TOTAL"                       # cursor up: redraw items
+  done
+  if [ "$PM_SEL" -eq "$((PM_TOTAL-1))" ]; then echo "__NEW__"; else echo "${PM_ITEMS[$PM_SEL]}"; fi
+}
 # In dry-run nothing is installed, so 'missing tool' must not abort the walkthrough.
 require_or_skip() { # require_or_skip <cmd> <fail-message>
   if have "$1"; then return 0; fi
@@ -85,10 +175,11 @@ require_or_skip() { # require_or_skip <cmd> <fail-message>
 }
 
 # --- verbose install logging (real runs only; dry-run writes no log) ---------
-# Everything the script prints (stdout+stderr) is mirrored to install-log.txt
-# via tee, probe commands that used to fail silently now append their error
-# output there, and each install command is echoed before it runs. When the
-# script ends badly the student is told where the log is — attach it when
+# Everything the script prints (stdout+stderr) is mirrored to
+# start-a-new-project-installation.log (in the folder the student ran this
+# from) via tee, probe commands that used to fail silently now append their
+# error output there, and each install command is echoed before it runs. When
+# the script ends badly the student is told where the log is — attach it when
 # asking for help. The log is scrubbed on exit: ANSI colours stripped, gh's
 # one-time device code redacted.
 LOG_FILE=""
@@ -111,14 +202,17 @@ log_scrub() { # strip ANSI colours + redact one-time codes; idempotent, best eff
     && mv "${LOG_FILE}.tmp2" "$LOG_FILE" || true
 }
 if [ "$DRY_RUN" = 0 ]; then
-  # Default home of the log unless --log= pointed elsewhere; unwritable
-  # destination falls back to the current directory.
-  LOG_FILE="${LOG_PATH_FLAG:-$HOME/install-log.txt}"
+  # Log lives in the LAUNCH DIRECTORY (the folder the student ran this from) —
+  # visible to a complete beginner, not buried in $HOME. The path is captured
+  # as an absolute value BEFORE any cd so that mid-script cd's into the
+  # project folder and the exit-time scrubber (which writes by path) can never
+  # resolve it elsewhere. Unwritable launch dir -> fall back to $HOME.
+  LOG_FILE="${LOG_PATH_FLAG:-$PWD/start-a-new-project-installation.log}"
   LOG_DIR="$(dirname "$LOG_FILE")"
   if ! mkdir -p "$LOG_DIR" 2>/dev/null || [ ! -w "$LOG_DIR" ]; then
-    LOG_FILE="$PWD/install-log.txt"
+    LOG_FILE="$HOME/start-a-new-project-installation.log"
   fi
-  : > "$LOG_FILE" 2>/dev/null || { LOG_FILE="$PWD/install-log.txt"; : > "$LOG_FILE"; }
+  : > "$LOG_FILE" 2>/dev/null || { LOG_FILE="$HOME/start-a-new-project-installation.log"; : > "$LOG_FILE"; }
   {
     echo "=== install-log: start-a-new-project.sh ==="
     echo "started: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
@@ -139,9 +233,11 @@ fi
 
 # --- OS detection -----------------------------------------------------------
 IS_MAC=0; IS_LINUX=0; IS_WSL=0; OS_TAG="linux"
-case "${FORCE_OS:-$(uname -s)}" in
-  Darwin|mac)     IS_MAC=1;  OS_TAG="mac" ;;
-  Linux|wsl)      IS_LINUX=1; OS_TAG="linux"
+# v4 fix: normalise to lowercase. '--force-os=linux' promised in the usage
+# block previously died here ('Linux|wsl' matched only the system value).
+case "$(printf '%s' "${FORCE_OS:-$(uname -s)}" | tr '[:upper:]' '[:lower:]')" in
+  darwin|mac)     IS_MAC=1;  OS_TAG="mac" ;;
+  linux|wsl)      IS_LINUX=1; OS_TAG="linux"
                   if grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; OS_TAG="wsl"; fi ;;
   *) die "Unsupported OS. Supported: macOS (Darwin), Linux/WSL. On Windows, run windows-wsl-bootstrap.ps1 first." ;;
 esac
@@ -221,7 +317,34 @@ fi
 # ============================================================================
 step "3/10  Working folder (created HERE — in the directory you ran this from)"
 WORKDIR="$WORKDIR_DEFAULT"
-ask "Project folder name [my-website]: " WORKDIR
+# If project folder(s) already exist in the Launch Directory (folder containing
+# .git), let the student CONTINUE one instead of silently starting a parallel,
+# un-hooked project next to it. No projects found -> plain folder-name prompt
+# exactly as before. Dry-run mentions the picker without blocking; a piped
+# (non-TTY) run lists what it found and takes the 'New project' default.
+PM_PROJECTS=""
+for d in */; do
+  d="${d%/}"
+  if [ -e "$d/.git" ]; then PM_PROJECTS="$PM_PROJECTS$d"$'\n'; fi   # if-form: a plain '&&' would kill the script under set -e when the last folder has no .git
+done
+PM_PROJECTS="${PM_PROJECTS%$'\n'}"
+if [ -n "$PM_PROJECTS" ] && [ "$DRY_RUN" = 1 ]; then
+  info "[dry-run] project folder(s) already exist here — would present a picker: continue one, or start a new project"
+  ask "Project folder name [$WORKDIR]: " WORKDIR
+elif [ -n "$PM_PROJECTS" ] && [ ! -t 0 ]; then
+  printf '%s\n' "$PM_PROJECTS" | while IFS= read -r d; do info "existing project found: $d"; done
+  printf '  (non-interactive) defaulting to a NEW project named: %s\n' "$WORKDIR"
+elif [ -n "$PM_PROJECTS" ]; then
+  PM_PICKED="$(pick_project_menu "$PM_PROJECTS")"
+  if [ "$PM_PICKED" = "__NEW__" ]; then
+    ask "Project folder name [$WORKDIR]: " WORKDIR
+  else
+    WORKDIR="$PM_PICKED"
+    ok "continuing existing project: $WORKDIR"
+  fi
+else
+  ask "Project folder name [$WORKDIR]: " WORKDIR
+fi
 WORKDIR="${WORKDIR:-$WORKDIR_DEFAULT}"
 PROJECT_DIR="$PWD/$WORKDIR"
 info "Project will live at: $PROJECT_DIR"
@@ -236,13 +359,48 @@ else
   fi
 fi
 # .gitignore FIRST — .env must never reach GitHub (safety standard, not paranoia)
+# Entries are ensured INDIVIDUALLY: a new project gets the full file; a resumed
+# project gets only the missing lines appended — never a wholesale rewrite
+# (same merge-only semantics as AGENTS.md and settings.json).
+GITIG_FULL='.env
+.env.*
+node_modules/
+.vercel/
+.DS_Store
+Thumbs.db
+*.log
+tmp/'
 if [ ! -f "$PROJECT_DIR/.gitignore" ]; then
-  run bash -c "printf '.env\nnode_modules/\n.vercel/\n' > '$PROJECT_DIR/.gitignore'"
-  ok "wrote .gitignore (protects .env secrets)"
-else ok ".gitignore already present"; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    info "[dry-run] would create $PROJECT_DIR/.gitignore (env secrets, node_modules, Vercel state, OS junk, logs, tmp/)"
+  else
+    printf '%s\n' "$GITIG_FULL" > "$PROJECT_DIR/.gitignore"
+    ok "wrote .gitignore (.env + .env.* secrets, node_modules, .vercel, OS junk, logs, tmp/)"
+  fi
+else
+  GITIG_MISSING=""
+  while IFS= read -r gi_entry; do
+    [ -n "$gi_entry" ] || continue
+    grep -qxF "$gi_entry" "$PROJECT_DIR/.gitignore" || GITIG_MISSING="$GITIG_MISSING$gi_entry"$'\n'
+  done <<EOF
+$GITIG_FULL
+EOF
+  if [ -z "$GITIG_MISSING" ]; then
+    ok ".gitignore already covers every entry — nothing to add"
+  elif [ "$DRY_RUN" = 1 ]; then
+    info "[dry-run] would append missing entries to .gitignore: $(printf '%s' "$GITIG_MISSING" | tr '\n' ' ' | sed 's/ $//')"
+  else
+    printf '\n# added by start-a-new-project (merge — existing entries untouched)\n%s' "$GITIG_MISSING" >> "$PROJECT_DIR/.gitignore"
+    ok ".gitignore updated (appended: $(printf '%s' "$GITIG_MISSING" | tr '\n' ' ' | sed 's/ $//')) — existing entries untouched"
+  fi
+fi
 if [ ! -f "$PROJECT_DIR/SPECIFICATION.md" ]; then
-  run bash -c "printf '# SPECIFICATION\\n\\nDraft this with a frontier LLM chat (Gemini/ChatGPT/Claude): pages, sections, purpose, copy, brand colours. The agent builds FROM this file.\\n' > '$PROJECT_DIR/SPECIFICATION.md'"
-  ok "wrote SPECIFICATION.md stub"
+  if [ "$DRY_RUN" = 1 ]; then
+    info "[dry-run] would write $PROJECT_DIR/SPECIFICATION.md stub"
+  else
+    printf '# SPECIFICATION\n\nDraft this with a frontier LLM chat (Gemini/ChatGPT/Claude): pages, sections, purpose, copy, brand colours. The agent builds FROM this file.\n' > "$PROJECT_DIR/SPECIFICATION.md"
+    ok "wrote SPECIFICATION.md stub"
+  fi
 else ok "SPECIFICATION.md already present"; fi
 if [ "$IS_WSL" = 1 ]; then
   case "$PROJECT_DIR" in
@@ -636,9 +794,11 @@ cat <<TOKENS
   2) Ollama (the ONLY auth Pi needs — no /login, no token files):
        a. https://ollama.com -> sign up / sign in (free account)
        b. Add your prepaid credit (class uses ~US\$5) in billing/settings
-       c. Account settings -> API keys -> Create key -> COPY it
+       c. https://ollama.com/settings/keys -> "Create API Key" -> COPY it
      You will paste that key below; the script exports it for this session
      AND saves it to your shell profile so every future terminal has it.
+     IMPORTANT: Pi will NOT launch without this key — the script asks again
+     at the end if it's still missing.
      (If a model ever says 'pro account needed' — that was the missing
       EXTENSION, already installed in step 7, not your account.)
 
@@ -653,32 +813,8 @@ cat <<TOKENS
 TOKENS
 if [ "$DRY_RUN" = 1 ]; then
   info "[dry-run] would ensure OLLAMA_API_KEY (prompt only if not already set) and run 'vercel login' (only if not authed)"
-elif [ -n "${OLLAMA_API_KEY:-}" ]; then
-  ok "OLLAMA_API_KEY already in this shell's environment — skipping the key prompt"
 else
-  PROFILE_FILE="$HOME/.bashrc"; [ "$IS_MAC" = 1 ] && PROFILE_FILE="$HOME/.zshrc"
-  SAVED_KEY_LINE="$(grep -h '^export OLLAMA_API_KEY=' "$PROFILE_FILE" 2>/dev/null | tail -1 || true)"
-  if [ -n "$SAVED_KEY_LINE" ]; then
-    # The line was written by this script (safely quoted); reuse it instead of
-    # asking the user to paste the key again on a re-run/new project.
-    eval "$SAVED_KEY_LINE"
-    export OLLAMA_API_KEY
-    ok "OLLAMA_API_KEY loaded from $PROFILE_FILE — no key prompt needed"
-  elif [ -t 0 ]; then
-    printf '  Paste your Ollama API key (input hidden): '
-    read -rs OLLAMA_KEY_INPUT; printf '\n'
-    OLLAMA_KEY_INPUT="$(printf '%s' "$OLLAMA_KEY_INPUT" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    if [ -z "$OLLAMA_KEY_INPUT" ]; then
-      warn "no key entered — Pi will start unauthenticated. Either re-run this script, or before launching pi run:  export OLLAMA_API_KEY=\"<your-key>\""
-    else
-      export OLLAMA_API_KEY="$OLLAMA_KEY_INPUT"
-      printf '\n# Ollama API key — used by Pi (ollama-cloud provider)\nexport OLLAMA_API_KEY=%q\n' "$OLLAMA_KEY_INPUT" >> "$PROFILE_FILE"
-      ok "OLLAMA_API_KEY exported and saved to $PROFILE_FILE — all future terminals auto-load it; Pi picks it up from the environment (no /login)"
-      unset OLLAMA_KEY_INPUT
-    fi
-  else
-    warn "non-interactive run: put the key in the environment before launching pi (export OLLAMA_API_KEY=...)"
-  fi
+  ensure_ollama_key || warn "setup continues — the Pi launch at the end will ask for the key again before Pi starts"
 fi
 if [ "$DRY_RUN" = 1 ]; then : ; elif have vercel && probe vercel whoami; then
   ok "Vercel already logged in ($(vercel whoami 2>/dev/null)) — skipping login"
@@ -688,11 +824,27 @@ fi
 
 # ============================================================================
 step "9/10  Repo creation + first push"
-REPO_NAME="$WORKDIR"
-ask "GitHub repo name [$REPO_NAME]: " REPO_NAME
-REPO_NAME="${REPO_NAME:-$WORKDIR}"
+# The repo name is only ever needed to CREATE a repo — if origin is already
+# linked from a previous run/resume, there is nothing to name, so skip the
+# prompt entirely instead of re-asking a noob a question that has no effect.
 if [ "$DRY_RUN" = 0 ]; then
   cd "$PROJECT_DIR"
+  HAVE_ORIGIN=0
+  if probe git remote get-url origin; then   # if-form, not '&&': set -e must not treat a missing origin as fatal
+    HAVE_ORIGIN=1
+    ok "remote already linked ($(git remote get-url origin)) — no repo-name prompt needed"
+  fi
+else
+  HAVE_ORIGIN=0   # dry-run: assume fresh-project walkthrough, keep the ask line
+fi
+REPO_NAME="$WORKDIR"
+if [ "${HAVE_ORIGIN:-0}" = 1 ]; then
+  :   # name comes from the existing remote
+else
+  ask "GitHub repo name [$REPO_NAME]: " REPO_NAME
+  REPO_NAME="${REPO_NAME:-$WORKDIR}"
+fi
+if [ "$DRY_RUN" = 0 ]; then
   OWNER="$(gh api user --jq .login 2>/dev/null || echo unknown)"
   if ! probe git remote get-url origin; then
     git add -A
@@ -733,6 +885,27 @@ fi
 
 # ============================================================================
 step "10/10  Vercel (the publisher)"
+# --- Vercel hookup status ----------------------------------------------------
+# Two notions of 'hooked up': the dashboard import (deploys on push, invisible
+# in the folder) and the CLI link (.vercel/project.json). The link is what the
+# toolchain uses and what we can verify for free: 'vercel link --yes --project
+# <name>' repairs the main real-world case — a dashboard-imported project with
+# the same repo name — without parsing any CLI output.
+VERCEL_INSTRUCTIONS_SHOWN=0
+if [ "$DRY_RUN" = 1 ]; then
+  info "[dry-run] would check the Vercel CLI link (.vercel/project.json) and run 'vercel link --yes --project $REPO_NAME' if missing"
+elif [ ! -f "$PROJECT_DIR/.vercel/project.json" ]; then
+  warn "this project folder is not linked to Vercel yet — trying: vercel link --yes --project $REPO_NAME"
+  if have vercel && [ -t 0 ] && vercel link --yes --project "$REPO_NAME"; then
+    ok "Vercel CLI linked to project '$REPO_NAME'"
+  else
+    warn "could not link automatically (no vercel CLI / project not on this account / non-interactive) — finish the hookup as described below, or run 'vercel link' and pick the right project from the list"
+    VERCEL_INSTRUCTIONS_SHOWN=1
+  fi
+else
+  ok "Vercel: this folder is linked to a Vercel project (.vercel/project.json present) — every push redeploys"
+fi
+if [ "$DRY_RUN" = 1 ] || [ ! -f "$PROJECT_DIR/.vercel/project.json" ]; then
 cat <<VERCEL
 
   In a browser (one-time, ~2 min):
@@ -751,6 +924,7 @@ cat <<VERCEL
   -> Production). If the site lags behind pushes, check that first.
 
 VERCEL
+fi
 
 # ============================================================================
 step "DONE — daily loop from tomorrow"
@@ -762,7 +936,8 @@ cat <<NEXT
       source ~/.nvm/nvm.sh
   ('ollama launch pi' needs the same PATH, since it just searches for node.)
 
-  Install log: ${LOG_FILE:-none} — every run overwrites it; attach it when asking for help.
+  Install log: ${LOG_FILE:-none} — every run overwrites it; it lives in the folder
+  you ran this script from (or wherever --log= pointed). Attach it when asking for help.
 
   Resume loop (every session):
     cd "$PROJECT_DIR"            # go to the project (created in the directory
@@ -786,16 +961,22 @@ cat <<PISTART
     - AGENTS.md:          Directory Boundary + Temporary Folder rules — Pi stays inside the project (tmp goes to ./tmp/)
     - skills:             Ryan's skills copied into ~/.pi/agent/skills/
     - authentication:     OLLAMA_API_KEY exported (this shell) + saved to your profile
-                          (new terminals load it automatically — no /login ever needed)
+                          (new terminals load it automatically — no /login ever needed;
+                           Pi WILL REFUSE to start without it)
     - packages:           pi-ollama-cloud + pi-hide-providers + web-search install on Pi's first launch
 
 PISTART
 if [ "$DRY_RUN" = 1 ]; then
-  info "[dry-run] would run:  cd '$PROJECT_DIR' && pi"
+  info "[dry-run] would require OLLAMA_API_KEY (prompt if missing), then run:  cd '$PROJECT_DIR' && pi"
 elif [ -t 0 ]; then
   cd "$PROJECT_DIR" || die "project folder missing: $PROJECT_DIR"
   if ! have pi; then
     warn "pi is not on PATH in this shell — run:  source ~/.nvm/nvm.sh && cd \"$PROJECT_DIR\" && pi"
+  elif [ -z "${OLLAMA_API_KEY:-}" ] && ! ensure_ollama_key; then
+    # Second-chance prompt happened inside ensure_ollama_key and produced no
+    # key — Pi must NEVER start unauthenticated (its first action would be a
+    # cloud error far from the one sentence that fixes it).
+    warn "Pi NOT launched — it needs an Ollama API key. Get it at https://ollama.com/settings/keys (click \"Create API Key\"), then:  export OLLAMA_API_KEY=\"<key>\" && cd \"$PROJECT_DIR\" && pi"
   else
     info "Launching Pi in $PROJECT_DIR — quitting Pi (ctrl+c/ctrl+d) returns you here."
     # Child process, never exec: quitting Pi must not end this script's session.
@@ -811,7 +992,7 @@ elif [ -t 0 ]; then
     fi
   fi
 else
-  info "Non-interactive run — start Pi yourself:  cd \"$PROJECT_DIR\" && pi"
+  info "Non-interactive run — get your key at https://ollama.com/settings/keys (click \"Create API Key\") if not yet exported, then start Pi yourself:  export OLLAMA_API_KEY=\"<key>\" ; cd \"$PROJECT_DIR\" && pi"
 fi
 if [ "$DRY_RUN" = 1 ]; then
   ok "Setup complete ($OS_TAG, DRY-RUN — nothing was changed)"
