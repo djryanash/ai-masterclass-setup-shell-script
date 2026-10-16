@@ -188,8 +188,17 @@ require_or_skip() { # require_or_skip <cmd> <fail-message>
 # asking for help. The log is scrubbed on exit: ANSI colours stripped, gh's
 # one-time device code redacted.
 LOG_FILE=""
-probe() { # probe <cmd...> — like >/dev/null 2>&1, but failure output is logged
-  if [ -n "$LOG_FILE" ]; then "$@" >>"$LOG_FILE" 2>&1; else "$@" >/dev/null 2>&1; fi
+probe() { # probe <cmd...> — like >/dev/null 2>&1, but FAILURES are logged
+  # Only failure output goes to the log: probes are boolean checks, so
+  # success output is noise (a dpkg -s package dump per checked package once
+  # flooded half the install log). Failure context is the whole value.
+  if [ -n "$LOG_FILE" ]; then
+    PROBE_OUT="$($@ 2>&1)"; PROBE_RC=$?
+    [ "$PROBE_RC" -ne 0 ] && printf '%s\n' "$PROBE_OUT" >>"$LOG_FILE"
+    return $PROBE_RC
+  else
+    "$@" >/dev/null 2>&1
+  fi
 }
 census() { # one line per managed tool: path on PATH or MISSING
   printf -- '--- tools on PATH (%s) ---\n' "$(date -u '+%Y-%m-%d %H:%M:%SZ')"
@@ -903,12 +912,17 @@ elif [ ! -f "$PROJECT_DIR/.vercel/project.json" ]; then
   warn "this project folder is not linked to Vercel yet — trying: vercel link --yes --project $REPO_NAME"
   if have vercel && [ -t 0 ] && vercel link --yes --project "$REPO_NAME"; then
     ok "Vercel CLI linked to project '$REPO_NAME'"
+    # vercel link creates the project but its automatic GitHub connection can
+    # silently fail for a just-created private repo (seen live 16 Oct) — then
+    # pushes would NOT redeploy and the dashboard text below never shows. Be
+    # explicit that the student must confirm the connection after first push.
+    warn "Vercel may not have connected the GitHub repo automatically — after your first push, check that the deploy appeared; if not, import the repo at https://vercel.com/new once (see below)"
   else
     warn "could not link automatically (no vercel CLI / project not on this account / non-interactive) — finish the hookup as described below, or run 'vercel link' and pick the right project from the list"
     VERCEL_INSTRUCTIONS_SHOWN=1
   fi
 else
-  ok "Vercel: this folder is linked to a Vercel project (.vercel/project.json present) — every push redeploys"
+  ok "Vercel: this folder is linked to a Vercel project (.vercel/project.json present) — pushes redeploy once the repo is connected on Vercel (import at https://vercel.com/new if pushes don't deploy)"
 fi
 if [ "$DRY_RUN" = 1 ] || [ ! -f "$PROJECT_DIR/.vercel/project.json" ]; then
 cat <<VERCEL
