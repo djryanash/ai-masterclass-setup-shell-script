@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16L"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16N"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -85,6 +85,24 @@ pause() { msg="${1:-continue}"; if [ -t 0 ] && [ "$DRY_RUN" = 0 ]; then
 ask()   { if [ -t 0 ] && [ "$DRY_RUN" = 0 ]; then read -r -p "  $1" "$2"; else printf '  (non-interactive) defaulting %s to: %s\n' "$2" "${!2}"; fi; }
 run()   { if [ "$DRY_RUN" = 1 ]; then info "[dry-run] $*"; else printf '  + %s\n' "$*"; "$@"; fi; }
 have()  { command -v "$1" >/dev/null 2>&1; }
+
+kebab() { # kebab-case normalizer for student-typed names; prints result (may be empty)
+  # One rule everywhere: lowercase letters, digits, hyphens. Spaces/underscores
+  # become hyphens; everything else is stripped; hyphen runs collapse; no
+  # leading/trailing hyphens. Empty result means "no usable name".
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C sed -E -e 's/[[:space:]_]+/-/g' -e 's/[^a-z0-9-]//g' \
+                      -e 's/-{2,}/-/g' -e 's/^-+//' -e 's/-+$//'
+}
+norm_workdir() { # normalize $WORKDIR in place (NEW names only — never resumed projects)
+  local norm
+  norm="$(kebab "$1")"
+  if [ -z "$norm" ]; then norm="$WORKDIR_DEFAULT"; fi
+  if [ "$norm" != "$1" ]; then
+    info "adjusted project name to kebab-case: $norm (lowercase letters, digits, hyphens — used everywhere: folder, GitHub, Vercel)"
+  fi
+  WORKDIR="$norm"
+}
 
 ensure_ollama_key() { # idempotent: already in env, already saved in profile, or prompt+save
   # Pi cannot reach the cloud model without OLLAMA_API_KEY. Called from the
@@ -191,6 +209,8 @@ require_or_skip() { # require_or_skip <cmd> <fail-message>
 # one-time device code redacted.
 LOG_FILE=""
 TELEMETRY_DONE=0   # telemetry fires once — success path or failure trap, never both
+TELEMETRY_REPO="djryanash/ai-masterclass-setup-shell-script"
+TELEMETRY_URL=""
 probe() { # probe <cmd...> — like >/dev/null 2>&1, but FAILURES are logged
   # Only failure output goes to the log: probes are boolean checks, so
   # success output is noise (a dpkg -s package dump per checked package once
@@ -252,6 +272,78 @@ if [ "$DRY_RUN" = 0 ]; then
   # last successful line with no hint why). Direct append precedes the scrub,
   # so failed runs tell their story.
   trap '_rc=$?; if [ "$_rc" -ne 0 ] && [ -n "$LOG_FILE" ]; then printf "  NOTE install ended early (exit code %s) — see the log tail above for what ran last\n" "$_rc" >>"$LOG_FILE"; _telemetry_exit="$_rc"; log_telemetry; fi; log_scrub' EXIT
+
+# NOTE: telemetry functions live HERE, above almost everything, because the
+# EXIT trap fires for deaths at ANY point — a student failing at step 4 must
+# still reach them (a definition 900 lines later hit 'command not found' in
+# the trap for exactly the students we most need logs from; found live
+# 16 Oct, exit 127). Globals read here use ${:-} defaults because
+# OS_TAG/SCRIPT_REV may not be set yet at early-failure time.
+log_telemetry_fallback() { # no gh / not authed (failed before step 4): pre-filled browser issue
+  # ASCII-only body in the URL (raw UTF-8 em-dashes in queries are flaky)
+  trim_lines() { LC_ALL=C tr -cd '\11\12\40-\176' < "$1" | awk "{ if (length(\$0)>150) print substr(\$0,1,150) \" [cut]\"; else print }"; }
+  local body="$LOG_FILE.issue-body.txt"
+  {
+    trim_lines "$LOG_FILE" | head -n 15
+    printf '\n... MIDDLE OF THE LOG ELIDED (the full log is on this machine) ...\n\n'
+    trim_lines "$LOG_FILE" | tail -n 40
+  } > "$body" 2>/dev/null || return 0
+  # percent-encode for a query string; browsers accept a few KB
+  local body_enc
+  body_enc="$( { head -c 6000 "$body"; } | tr '\n' '\001' | sed -e 's/%/%25/g' -e 's/"/%22/g' -e 's/#/%23/g' -e 's/&/%26/g' -e 's/ /%20/g' -e 's/</%3C/g' -e 's/>/%3E/g' | tr '\001' '\n' | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g' )"
+  local title_enc
+  title_enc="$( printf '%s' "[auto] setup FAILED early (before GitHub login) — rev ${SCRIPT_REV:-?} · $OS_TAG · exit ${_telemetry_exit:-0}" | LC_ALL=C tr -cd '\11\12\40-\176' | sed -e 's/%/%25/g' -e 's/&/%26/g' -e 's/ /%20/g' )"
+  local url="https://github.com/$TELEMETRY_REPO/issues/new?title=$title_enc&body=$body_enc"
+  printf '%s\n' "$url" > "$LOG_FILE.url"
+  printf '\n'
+  printf '  %s=========================== WE NEED YOUR HELP ===========================%s\n' "$B" "$N"
+  printf '  The setup FAILED before GitHub was connected, so the log could not be\n'
+  printf '  uploaded automatically. Please do this (1 minute, your phone works):\n'
+  printf '    1. Open this link: %s\n' "$url"
+  printf '    2. Sign in to github.com if asked (an account is free)\n'
+  printf '    3. Click the green "Submit new issue" button\n'
+  printf '  The log link is also saved in: %s.url\n' "$LOG_FILE"
+  if [ "$IS_MAC" = 1 ]; then open "$url" 2>/dev/null && printf '  (that link should have opened in your browser just now)\n'; fi
+  printf '  %s=========================================================================%s\n' "$B" "$N"
+}
+
+log_telemetry() {
+  if [ "${TELEMETRY_DONE:-1}" = 1 ] || [ -z "${TELEMETRY_REPO:-}" ]; then return 0; fi
+  TELEMETRY_DONE=1
+  if [ "${DRY_RUN:-1}" = 1 ] || [ -z "${LOG_FILE:-}" ] || [ ! -f "$LOG_FILE" ]; then return 0; fi
+  if ! have gh; then log_telemetry_fallback; return 0; fi
+  if ! gh auth status >/dev/null 2>&1; then log_telemetry_fallback; return 0; fi
+  # long progress-bar lines are capped so the body stays readable and small
+  trim_lines() { awk '{ if (length($0)>300) print substr($0,1,300) " [line truncated]"; else print }' "$1"; }
+  local body="$LOG_FILE.issue"
+  {
+    trim_lines "$LOG_FILE" | head -n 60
+    printf '\n… middle of the log elided for size — full log on the student machine at %s …\n\n' "$LOG_FILE"
+    trim_lines "$LOG_FILE" | tail -n 300
+  } > "$body" 2>/dev/null || return 0
+  # GitHub caps issue bodies near 64KB: shrink the tail until the body fits
+  local n=300
+  while [ "$(wc -c < "$body")" -gt 60000 ]; do
+    n=$((n/2))
+    if [ "$n" -le 40 ]; then
+      tail -c 60000 "$body" > "$body.tmp" && mv "$body.tmp" "$body"
+      break
+    fi
+    { trim_lines "$LOG_FILE" | head -n 60; printf '\n… middle of the log elided for size …\n\n'; trim_lines "$LOG_FILE" | tail -n "$n"; } > "$body" 2>/dev/null || return 0
+  done
+  local title
+  title="[auto] install log — rev ${SCRIPT_REV:-?} · $OS_TAG · exit ${_telemetry_exit:-0} · $(hostname 2>/dev/null || echo unknown-host) · $(date -u '+%Y-%m-%dT%H:%MZ')"
+  local url
+  url="$(gh issue create --repo "$TELEMETRY_REPO" --title "$title" --body-file "$body" 2>/dev/null || true)"
+  rm -f "$body"
+  case "$url" in
+    https://github.com/*)
+      TELEMETRY_URL="$url"
+      printf '  ✓ install log auto-uploaded for support: %s\n' "$url" >> "$LOG_FILE"
+      printf '  ✓ install log auto-uploaded for support: %s\n' "$url"
+      ;;
+  esac
+}
 fi
 
 # --- OS detection -----------------------------------------------------------
@@ -354,6 +446,7 @@ PM_PROJECTS="${PM_PROJECTS%$'\n'}"
 if [ -n "$PM_PROJECTS" ] && [ "$DRY_RUN" = 1 ]; then
   info "[dry-run] project folder(s) already exist here — would present a picker: continue one, or start a new project"
   ask "Project folder name [$WORKDIR]: " WORKDIR
+  norm_workdir "$WORKDIR"
 elif [ -n "$PM_PROJECTS" ] && [ ! -t 0 ]; then
   printf '%s\n' "$PM_PROJECTS" | while IFS= read -r d; do info "existing project found: $d"; done
   printf '  (non-interactive) defaulting to a NEW project named: %s\n' "$WORKDIR"
@@ -361,12 +454,14 @@ elif [ -n "$PM_PROJECTS" ]; then
   PM_PICKED="$(pick_project_menu "$PM_PROJECTS")"
   if [ "$PM_PICKED" = "__NEW__" ]; then
     ask "Project folder name [$WORKDIR]: " WORKDIR
+    norm_workdir "$WORKDIR"
   else
     WORKDIR="$PM_PICKED"
     ok "continuing existing project: $WORKDIR"
   fi
 else
   ask "Project folder name [$WORKDIR]: " WORKDIR
+  norm_workdir "$WORKDIR"
 fi
 WORKDIR="${WORKDIR:-$WORKDIR_DEFAULT}"
 PROJECT_DIR="$PWD/$WORKDIR"
@@ -464,10 +559,12 @@ if [ "$DRY_RUN" = 0 ] && ! probe gh auth status; then
   info "No GitHub login on this machine."
   info "A one-time code will appear — open https://github.com/login/device in ANY browser (your phone is fine; a headless WSL box cannot open one itself) and enter it."
   # Flags pre-answer gh's four prompts (account/protocol/auth/web) so students
-  # skip straight to the device code.
-  run gh auth login --hostname github.com --git-protocol https --web
+  # skip straight to the device code. GUARDED: students abort this (Esc, close
+  # tab, timeout) more often than they finish it — failure must warn, not kill
+  # the run (found live 16 Oct: fake-gh failure crashed the whole script).
+  run gh auth login --hostname github.com --git-protocol https --web || warn "GitHub login did not finish — the script continues, but without a login the repo/push steps will be skipped. Re-run when ready, or fix later with: gh auth login"
 fi
-run gh auth setup-git   # git now uses gh as its credential helper — pushes work without tokens in URLs
+run gh auth setup-git || warn "gh auth setup-git failed — git pushes may prompt for credentials; re-run or run: gh auth setup-git"
 if [ "$DRY_RUN" = 0 ]; then
   if probe gh auth status; then
     # Canonical GitHub noreply identity, (re)set on EVERY run: idempotent and
@@ -1000,12 +1097,11 @@ else
   HAVE_ORIGIN=0   # dry-run: assume fresh-project walkthrough, keep the ask line
 fi
 REPO_NAME="$WORKDIR"
-if [ "${HAVE_ORIGIN:-0}" = 1 ]; then
-  :   # name comes from the existing remote
-else
-  ask "GitHub repo name [$REPO_NAME]: " REPO_NAME
-  REPO_NAME="${REPO_NAME:-$WORKDIR}"
-fi
+# No repo-name prompt (removed 16 Oct): the repo simply matches the project
+# folder name — one question less for noobs. If a repo with that name already
+# exists on the account, the link-instead-of-create path below handles it.
+REPO_NAME="$(kebab "$REPO_NAME")"
+if [ -z "$REPO_NAME" ]; then REPO_NAME="$WORKDIR"; fi
 if [ "$DRY_RUN" = 0 ]; then
   OWNER="$(gh api user --jq .login 2>/dev/null || echo unknown)"
   if ! probe git remote get-url origin; then
@@ -1182,73 +1278,6 @@ fi
 # and hostname ride in the title for instant triage. Body: trimmed copy of the
 # log (header + tail; middle elided; long progress-bar lines capped) because
 # GitHub caps issue bodies at ~64KB. Best effort: any failure is silent.
-TELEMETRY_REPO="djryanash/ai-masterclass-setup-shell-script"
-TELEMETRY_URL=""
-log_telemetry_fallback() { # no gh / not authed (failed before step 4): pre-filled browser issue
-  # ASCII-only body in the URL (raw UTF-8 em-dashes in queries are flaky)
-  trim_lines() { LC_ALL=C tr -cd '\11\12\40-\176' < "$1" | awk "{ if (length(\$0)>150) print substr(\$0,1,150) \" [cut]\"; else print }"; }
-  local body="$LOG_FILE.issue-body.txt"
-  {
-    trim_lines "$LOG_FILE" | head -n 15
-    printf '\n... MIDDLE OF THE LOG ELIDED (the full log is on this machine) ...\n\n'
-    trim_lines "$LOG_FILE" | tail -n 40
-  } > "$body" 2>/dev/null || return 0
-  # percent-encode for a query string; browsers accept a few KB
-  local body_enc
-  body_enc="$( { head -c 6000 "$body"; } | tr '\n' '\001' | sed -e 's/%/%25/g' -e 's/"/%22/g' -e 's/#/%23/g' -e 's/&/%26/g' -e 's/ /%20/g' -e 's/</%3C/g' -e 's/>/%3E/g' | tr '\001' '\n' | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g' )"
-  local title_enc
-  title_enc="$( printf '%s' "[auto] setup FAILED early (before GitHub login) — rev $SCRIPT_REV · $OS_TAG · exit ${_telemetry_exit:-0}" | LC_ALL=C tr -cd '\11\12\40-\176' | sed -e 's/%/%25/g' -e 's/&/%26/g' -e 's/ /%20/g' )"
-  local url="https://github.com/$TELEMETRY_REPO/issues/new?title=$title_enc&body=$body_enc"
-  printf '%s\n' "$url" > "$LOG_FILE.url"
-  printf '\n'
-  printf '  %s=========================== WE NEED YOUR HELP ===========================%s\n' "$B" "$N"
-  printf '  The setup FAILED before GitHub was connected, so the log could not be\n'
-  printf '  uploaded automatically. Please do this (1 minute, your phone works):\n'
-  printf '    1. Open this link: %s\n' "$url"
-  printf '    2. Sign in to github.com if asked (an account is free)\n'
-  printf '    3. Click the green "Submit new issue" button\n'
-  printf '  The log link is also saved in: %s.url\n' "$LOG_FILE"
-  if [ "$IS_MAC" = 1 ]; then open "$url" 2>/dev/null && printf '  (that link should have opened in your browser just now)\n'; fi
-  printf '  %s=========================================================================%s\n' "$B" "$N"
-}
-
-log_telemetry() {
-  if [ "$TELEMETRY_DONE" = 1 ]; then return 0; fi
-  TELEMETRY_DONE=1
-  if [ "$DRY_RUN" = 1 ] || [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then return 0; fi
-  if ! have gh; then log_telemetry_fallback; return 0; fi
-  if ! gh auth status >/dev/null 2>&1; then log_telemetry_fallback; return 0; fi
-  # long progress-bar lines are capped so the body stays readable and small
-  trim_lines() { awk '{ if (length($0)>300) print substr($0,1,300) " [line truncated]"; else print }' "$1"; }
-  local body="$LOG_FILE.issue"
-  {
-    trim_lines "$LOG_FILE" | head -n 60
-    printf '\n… middle of the log elided for size — full log on the student machine at %s …\n\n' "$LOG_FILE"
-    trim_lines "$LOG_FILE" | tail -n 300
-  } > "$body" 2>/dev/null || return 0
-  # GitHub caps issue bodies near 64KB: shrink the tail until the body fits
-  local n=300
-  while [ "$(wc -c < "$body")" -gt 60000 ]; do
-    n=$((n/2))
-    if [ "$n" -le 40 ]; then
-      tail -c 60000 "$body" > "$body.tmp" && mv "$body.tmp" "$body"
-      break
-    fi
-    { trim_lines "$LOG_FILE" | head -n 60; printf '\n… middle of the log elided for size …\n\n'; trim_lines "$LOG_FILE" | tail -n "$n"; } > "$body" 2>/dev/null || return 0
-  done
-  local title
-  title="[auto] install log — rev $SCRIPT_REV · $OS_TAG · exit ${_telemetry_exit:-0} · $(hostname 2>/dev/null || echo unknown-host) · $(date -u '+%Y-%m-%dT%H:%MZ')"
-  local url
-  url="$(gh issue create --repo "$TELEMETRY_REPO" --title "$title" --body-file "$body" 2>/dev/null || true)"
-  rm -f "$body"
-  case "$url" in
-    https://github.com/*)
-      TELEMETRY_URL="$url"
-      printf '  ✓ install log auto-uploaded for support: %s\n' "$url" >> "$LOG_FILE"
-      printf '  ✓ install log auto-uploaded for support: %s\n' "$url"
-      ;;
-  esac
-}
 if [ "$DRY_RUN" = 1 ]; then
   ok "Setup complete ($OS_TAG, DRY-RUN — nothing was changed)"
 else
