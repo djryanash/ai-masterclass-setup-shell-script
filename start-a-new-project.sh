@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16K"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16L"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -730,7 +730,9 @@ fi
 
 # --- 7b-bis. Startup skill greeting (Pi extension) ---------------------------
 # A tiny local Pi extension: on TUI startup it notifies the student with the
-# list of installed skills and how to invoke them ('/' + skill name). The
+# list of installed skills (cyan name + dim one-line description from each
+# SKILL.md frontmatter, colours verified to pass through the TUI) and how to
+# invoke them ('/' + skill name). The
 # script OWNS this file — overwritten on every run so greeting improvements
 # ship with SCRIPT_REV. Lists skills from ~/.pi/agent/skills and <cwd>/.pi/skills.
 if [ "$DRY_RUN" = 1 ]; then
@@ -744,6 +746,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
+// The TUI passes SGR (ANSI colour) escapes through ctx.ui.notify, verified
+// live 16 Oct: names render cyan, descriptions dim, wrapping preserved.
+const CYAN = "\x1b[36m";
+const DIM = "\x1b[2m";
+const RST = "\x1b[0m";
+
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     if (ctx.mode !== "tui" || event.reason !== "startup") return;
@@ -751,20 +759,33 @@ export default function (pi: ExtensionAPI) {
       path.join(os.homedir(), ".pi", "agent", "skills"),
       path.join(ctx.cwd, ".pi", "skills"),
     ];
-    const names = new Set<string>();
+    const skills = new Map<string, string>(); // name -> one-line description
     for (const dir of dirs) {
       try {
         for (const name of fs.readdirSync(dir)) {
+          if (skills.has(name)) continue;
           try {
-            if (fs.statSync(path.join(dir, name, "SKILL.md")).isFile()) names.add(name);
+            if (fs.statSync(path.join(dir, name, "SKILL.md")).isFile()) {
+              let desc = "";
+              try {
+                const txt = fs.readFileSync(path.join(dir, name, "SKILL.md"), "utf8");
+                const m = txt.match(/^description:\s*(.+)$/m);
+                if (m) desc = m[1].trim();
+              } catch { /* unreadable SKILL.md */ }
+              if (desc.length > 160) desc = desc.slice(0, 157).replace(/\s+\S*$/, "") + "…";
+              skills.set(name, desc);
+            }
           } catch { /* no SKILL.md in that folder */ }
         }
       } catch { /* directory absent */ }
     }
-    if (names.size === 0) return;
-    const list = [...names].sort().map((n) => `  • ${n}`).join("\n");
+    if (skills.size === 0) return;
+    const lines = [...skills.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([n, d]) => (d ? `  ${CYAN}• ${n}${RST} ${DIM}— ${d}${RST}` : `  • ${n}`))
+      .join("\n");
     ctx.ui.notify(
-      `I have a number of useful skills you can use for business, coding and/or networking:\n\n${list}\n\nType "/" followed by a skill name to run it.`,
+      `I have a number of useful skills you can use for business, coding and/or networking:\n\n${lines}\n\nType "/" followed by a skill name to run it.`,
       "info",
     );
   });
