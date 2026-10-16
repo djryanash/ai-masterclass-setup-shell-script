@@ -155,6 +155,11 @@ bash start-a-new-project.sh
 * Every real run writes a verbose log to
   `start-a-new-project-installation.log` in the folder you ran the script
   from — **attach that file when asking for help**.
+* Windows: the WSL bootstrap (Step 2c / Step 1 of the Windows fallback) writes
+  its own log — `windows-wsl-bootstrap-installation.log`, next to the `.ps1`
+  file. If you are stuck on WSL not installing, you can also run
+  `powershell -ExecutionPolicy Bypass -File .\windows-wsl-bootstrap.ps1 -Report`
+  to diagnose without changing anything, then attach that log.
 * If Pi fails to launch because of a missing Ollama API key: visit
   <https://ollama.com/settings/keys>, click **Create API Key**, and paste it
   when the script prompts you.
