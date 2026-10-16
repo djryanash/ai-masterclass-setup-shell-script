@@ -160,6 +160,10 @@ bash start-a-new-project.sh
   file. If you are stuck on WSL not installing, you can also run
   `powershell -ExecutionPolicy Bypass -File .\windows-wsl-bootstrap.ps1 -Report`
   to diagnose without changing anything, then attach that log.
+* Good news: you usually don't have to attach anything. The setup script
+  automatically uploads its installation log to this repository's Issues page
+  (titles start with `[auto]`) when it finishes, and again if something fails.
+  Just tell whoever is helping you roughly when you ran the script.
 * If Pi fails to launch because of a missing Ollama API key: visit
   <https://ollama.com/settings/keys>, click **Create API Key**, and paste it
   when the script prompts you.

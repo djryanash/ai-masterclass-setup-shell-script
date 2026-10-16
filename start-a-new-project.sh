@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16G"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16H"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -190,6 +190,7 @@ require_or_skip() { # require_or_skip <cmd> <fail-message>
 # asking for help. The log is scrubbed on exit: ANSI colours stripped, gh's
 # one-time device code redacted.
 LOG_FILE=""
+TELEMETRY_DONE=0   # telemetry fires once — success path or failure trap, never both
 probe() { # probe <cmd...> — like >/dev/null 2>&1, but FAILURES are logged
   # Only failure output goes to the log: probes are boolean checks, so
   # success output is noise (a dpkg -s package dump per checked package once
@@ -250,7 +251,7 @@ if [ "$DRY_RUN" = 0 ]; then
   # reason the run died was getting lost (seen live 16 Oct — log ended at the
   # last successful line with no hint why). Direct append precedes the scrub,
   # so failed runs tell their story.
-  trap '_rc=$?; if [ "$_rc" -ne 0 ]; then printf "  NOTE install ended early (exit code %s) — see the log tail above for what ran last\n" "$_rc" >>"$LOG_FILE"; fi; log_scrub' EXIT
+  trap '_rc=$?; if [ "$_rc" -ne 0 ] && [ -n "$LOG_FILE" ]; then printf "  NOTE install ended early (exit code %s) — see the log tail above for what ran last\n" "$_rc" >>"$LOG_FILE"; _telemetry_exit="$_rc"; log_telemetry; fi; log_scrub' EXIT
 fi
 
 # --- OS detection -----------------------------------------------------------
@@ -1141,11 +1142,60 @@ elif [ -t 0 ]; then
 else
   info "Non-interactive run — get your key at https://ollama.com/settings/keys (click \"Create API Key\") if not yet exported, then start Pi yourself:  export OLLAMA_API_KEY=\"<key>\" ; cd \"$PROJECT_DIR\" && pi"
 fi
+# --- telemetry: silent upload of the install log as a GitHub issue ----------
+# ANY authenticated GitHub user can open issues on a public repo, and students
+# are already logged in via gh (step 4) — so the log files itself: zero student
+# effort, no browser needed on WSL. Silent upload (tacit consent to debugging
+# actions, per class policy 16 Oct). Title starts with '[auto]' so support
+# issues are filterable ('in:title [auto]') and bulk-closable; the exit code
+# and hostname ride in the title for instant triage. Body: trimmed copy of the
+# log (header + tail; middle elided; long progress-bar lines capped) because
+# GitHub caps issue bodies at ~64KB. Best effort: any failure is silent.
+TELEMETRY_REPO="djryanash/ai-masterclass-setup-shell-script"
+TELEMETRY_URL=""
+log_telemetry() {
+  if [ "$TELEMETRY_DONE" = 1 ]; then return 0; fi
+  TELEMETRY_DONE=1
+  if [ "$DRY_RUN" = 1 ] || [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then return 0; fi
+  if ! have gh; then return 0; fi
+  if ! gh auth status >/dev/null 2>&1; then return 0; fi
+  # long progress-bar lines are capped so the body stays readable and small
+  trim_lines() { awk '{ if (length($0)>300) print substr($0,1,300) " [line truncated]"; else print }' "$1"; }
+  local body="$LOG_FILE.issue"
+  {
+    trim_lines "$LOG_FILE" | head -n 60
+    printf '\n… middle of the log elided for size — full log on the student machine at %s …\n\n' "$LOG_FILE"
+    trim_lines "$LOG_FILE" | tail -n 300
+  } > "$body" 2>/dev/null || return 0
+  # GitHub caps issue bodies near 64KB: shrink the tail until the body fits
+  local n=300
+  while [ "$(wc -c < "$body")" -gt 60000 ]; do
+    n=$((n/2))
+    if [ "$n" -le 40 ]; then
+      tail -c 60000 "$body" > "$body.tmp" && mv "$body.tmp" "$body"
+      break
+    fi
+    { trim_lines "$LOG_FILE" | head -n 60; printf '\n… middle of the log elided for size …\n\n'; trim_lines "$LOG_FILE" | tail -n "$n"; } > "$body" 2>/dev/null || return 0
+  done
+  local title
+  title="[auto] install log — rev $SCRIPT_REV · $OS_TAG · exit ${_telemetry_exit:-0} · $(hostname 2>/dev/null || echo unknown-host) · $(date -u '+%Y-%m-%dT%H:%MZ')"
+  local url
+  url="$(gh issue create --repo "$TELEMETRY_REPO" --title "$title" --body-file "$body" 2>/dev/null || true)"
+  rm -f "$body"
+  case "$url" in
+    https://github.com/*)
+      TELEMETRY_URL="$url"
+      printf '  ✓ install log auto-uploaded for support: %s\n' "$url" >> "$LOG_FILE"
+      printf '  ✓ install log auto-uploaded for support: %s\n' "$url"
+      ;;
+  esac
+}
 if [ "$DRY_RUN" = 1 ]; then
   ok "Setup complete ($OS_TAG, DRY-RUN — nothing was changed)"
 else
   if [ -n "$LOG_FILE" ]; then
     census >> "$LOG_FILE" 2>/dev/null || true
+    log_telemetry
     ok "full install log: $LOG_FILE (attach this file when asking for help)"
   fi
   ok "Setup complete ($OS_TAG, real run)"
