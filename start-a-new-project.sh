@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16N"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16O"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -1256,15 +1256,7 @@ elif [ -t 0 ]; then
       warn "no controlling terminal — Pi may fail to render; starting it anyway"
       pi || true
     fi
-    info "Pi exited. Relaunch any time with:  cd \"$PROJECT_DIR\" && pi"
-    # A child script cannot modify the parent shell's PATH: if this terminal
-    # predates the first setup, 'pi' stays invisible there until it re-reads
-    # .bashrc. Detect (Linux: inspect the parent's environment) and say so.
-    if [ -r "/proc/$PPID/environ" ] && tr '\0' '\n' < "/proc/$PPID/environ" 2>/dev/null | grep -q '\.nvm'; then
-      ok "this terminal already has node/pi on PATH — keep using it"
-    else
-      warn "in THIS terminal 'pi' may still say 'command not found' (this script cannot change its parent shell). Fix now:  source ~/.nvm/nvm.sh  — or just open a new terminal; every future terminal loads pi automatically."
-    fi
+    info "Pi exited. When the summary below finishes, a fresh ready-to-use shell opens in this project — pi works there immediately."
   fi
 else
   info "Non-interactive run — get your key at https://ollama.com/settings/keys (click \"Create API Key\") if not yet exported, then start Pi yourself:  export OLLAMA_API_KEY=\"<key>\" ; cd \"$PROJECT_DIR\" && pi"
@@ -1287,4 +1279,25 @@ else
     ok "full install log: $LOG_FILE (attach this file when asking for help)"
   fi
   ok "Setup complete ($OS_TAG, real run)"
+fi
+
+# --- final: handoff to a fresh, ready-to-use shell ---------------------------
+# A child script cannot modify its parent shell's PATH, but it CAN replace
+# itself with a fresh interactive shell — which re-reads the profile, so pi
+# and node work instantly, and it opens in $PROJECT_DIR (cwd is inherited).
+# 'exit' returns to the original, stale terminal — the info lines below warn.
+# The EXIT trap does NOT fire on exec (verified 16 Oct), so log_scrub runs
+# HERE, and only interactive real runs qualify (guard below).
+if [ "${DRY_RUN:-0}" = 0 ] && [ -t 0 ]; then
+  EXEC_SHELL="/bin/bash"                # linux/WSL: nvm loader lives in .bashrc
+  [ "${IS_MAC:-0}" = 1 ] && EXEC_SHELL="${SHELL:-/bin/zsh}"   # mac default shell is zsh (loader in .zshrc)
+  case "$EXEC_SHELL" in */bash|*/zsh) : ;; *) EXEC_SHELL="/bin/bash" ;; esac
+  if [ -x "$EXEC_SHELL" ]; then
+    info "Handing you a fresh shell in $PROJECT_DIR — 'pi' and 'node' work right now."
+    info "When you're done, type 'exit' to return to your ORIGINAL terminal — that older"
+    info "shell may still say 'pi: command not found' (this script cannot change an"
+    info "already-running shell): open a new window then, or run:  source ~/.bashrc"
+    if [ -n "${LOG_FILE:-}" ]; then log_scrub; fi
+    exec "$EXEC_SHELL" -i </dev/tty >/dev/tty 2>&1
+  fi
 fi
