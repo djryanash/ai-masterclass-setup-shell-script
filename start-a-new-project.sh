@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16F"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16G"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -715,6 +715,51 @@ else
   else
     warn "no skills available (repo clone failed; no local 'ryans-ai-agent-skills' beside start-a-new-project.sh, ~, ~/Downloads; --skills-dir not given) — Pi runs fine without them. Re-run once the network is up."
   fi
+fi
+
+# --- 7b-bis. Startup skill greeting (Pi extension) ---------------------------
+# A tiny local Pi extension: on TUI startup it notifies the student with the
+# list of installed skills and how to invoke them ('/' + skill name). The
+# script OWNS this file — overwritten on every run so greeting improvements
+# ship with SCRIPT_REV. Lists skills from ~/.pi/agent/skills and <cwd>/.pi/skills.
+if [ "$DRY_RUN" = 1 ]; then
+  info "[dry-run] would write $PI_AGENT_DIR/extensions/skills-greeting.ts (startup skill greeting)"
+else
+  mkdir -p "$PI_AGENT_DIR/extensions"
+  cat > "$PI_AGENT_DIR/extensions/skills-greeting.ts" <<'TS'
+// skills-greeting.ts — greet students with the available skills at startup
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", async (event, ctx) => {
+    if (ctx.mode !== "tui" || event.reason !== "startup") return;
+    const dirs = [
+      path.join(os.homedir(), ".pi", "agent", "skills"),
+      path.join(ctx.cwd, ".pi", "skills"),
+    ];
+    const names = new Set<string>();
+    for (const dir of dirs) {
+      try {
+        for (const name of fs.readdirSync(dir)) {
+          try {
+            if (fs.statSync(path.join(dir, name, "SKILL.md")).isFile()) names.add(name);
+          } catch { /* no SKILL.md in that folder */ }
+        }
+      } catch { /* directory absent */ }
+    }
+    if (names.size === 0) return;
+    const list = [...names].sort().map((n) => `  • ${n}`).join("\n");
+    ctx.ui.notify(
+      `I have a number of useful skills you can use for business, coding and/or networking:\n\n${list}\n\nType "/" followed by a skill name to run it.`,
+      "info",
+    );
+  });
+}
+TS
+  ok "Pi startup greeting installed (skills list + '/' usage shown on launch)"
 fi
 
 # --- 7c. Pi settings.json (Ryan's class defaults — idempotent merge) --------
