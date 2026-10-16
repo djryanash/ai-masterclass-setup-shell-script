@@ -127,7 +127,12 @@ KEYPASTE
   return 1
 }
 
-pick_project_menu() { # pick_project_menu "name1\nname2\n..." — prints the picked folder name, or __NEW__
+pick_project_menu() { # pick_project_menu "name1\nname2\n..." — prints the picked folder name on STDOUT, or __NEW__
+  # IMPORTANT: all interaction (drawing, keys) goes to STDERR. The caller grabs
+  # the result with command substitution, which captures STDOUT only — anything
+  # drawn on stdout would be CONCATENATED INTO THE PICKED NAME (this actually
+  # happened; mkdir then died with 'File name too long'). stderr still reaches
+  # the terminal (and the tee log, which mirrors stderr too).
   # Up/down + Enter menu for a terminal; direct number keys 1-9 also work and
   # double as the numbered-list fallback. Bash-3.2-safe (no mapfile/no assoc
   # arrays): macOS ships 3.2 and this script supports it everywhere else.
@@ -142,14 +147,14 @@ New project
 EOF
   PM_TOTAL=$PM_N
   PM_SEL=$((PM_TOTAL-1))   # default highlight: "New project"
-  printf '  Existing project(s) found in this folder — up/down arrows, Enter to choose:\n'
+  printf '  Existing project(s) found in this folder — up/down arrows, Enter to choose:\n' >&2
   while :; do
     PM_I=0
     while [ "$PM_I" -lt "$PM_TOTAL" ]; do
       if [ "$PM_I" -eq "$PM_SEL" ]; then
-        printf '  %s> %s%s%s\n' "$B" "$G" "${PM_ITEMS[$PM_I]}" "$N"
+        printf '  %s> %s%s%s\n' "$B" "$G" "${PM_ITEMS[$PM_I]}" "$N" >&2
       else
-        printf '    %s\n' "${PM_ITEMS[$PM_I]}"
+        printf '    %s\n' "${PM_ITEMS[$PM_I]}" >&2
       fi
       PM_I=$((PM_I+1))
     done
@@ -164,7 +169,7 @@ EOF
       [1-9]) PM_J=$((PM_KEY-1))
              if [ "$PM_J" -lt "$PM_TOTAL" ]; then PM_SEL=$PM_J; break; fi ;;
     esac
-    printf '\033[%dA' "$PM_TOTAL"                       # cursor up: redraw items
+    printf '\033[%dA' "$PM_TOTAL" >&2                       # cursor up: redraw items
   done
   if [ "$PM_SEL" -eq "$((PM_TOTAL-1))" ]; then echo "__NEW__"; else echo "${PM_ITEMS[$PM_SEL]}"; fi
 }
