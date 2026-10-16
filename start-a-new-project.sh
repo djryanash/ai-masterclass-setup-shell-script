@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16J"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16K"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -635,7 +635,7 @@ require_or_skip vercel "Vercel CLI missing after install — re-run or 'npm i -g
 # Sources are ADDITIVE, applied in this order (later wins same-named conflicts):
 #   1. --skills-dir=/path    explicit extra skills for this machine (source kept)
 #   2. 'ryans-ai-agent-skills' beside the script (or ~, ~/Downloads): private/
-#      custom skills for one student (source folder stays put — never removed)
+#      custom skills for one student (source REMOVED after a successful install)
 #   3. canonical repo (djryanash/ryans-agent-skills) cloned on EVERY run:
 #      add/replace — students always get the latest; repo wins same-named.
 # Clone failure is a warning, never fatal: customs survive, Pi runs fine.
@@ -676,16 +676,25 @@ if [ -z "${SKILLS_DIR:-}" ] || [ "$SKILLS_USED" = 1 ]; then
 elif [ ! -d "$SKILLS_DIR" ]; then
   :   # discovery found nothing
 elif [ "$DRY_RUN" = 1 ]; then
-  info "[dry-run] would COPY skills from '$SKILLS_DIR' into $SKILLS_DEST/ (additive-overwrite; source folder stays put)"
+  info "[dry-run] would MOVE skills from '$SKILLS_DIR' into $SKILLS_DEST/ (additive-overwrite; source removed after a successful install)"
   SKILLS_USED=1
 else
-  # Plain copy, source stays put (changed 16 Oct: consumption was a v2-era
-  # rule from when the local folder was the ONLY skill source; now the
-  # canonical repo wins same-named conflicts on every run, so a leftover
-  # folder can only re-add skills NOT in the repo - harmless and consistent
-  # with the additive-overwrite model).
   cp -R "$SKILLS_DIR/." "$SKILLS_DEST/"
   SKILLS_USED=1
+  # Consume the source — noobs shouldn't find a confusing leftover folder —
+  # but ONLY after a successful copy (set -e aborts before reaching here if
+  # cp failed) AND a sane layout (source had SKILL.md files). A wrong-layout
+  # folder is the student's only copy: left in place with a fix instruction.
+  SRC_SKILLS=0
+  shopt -s nullglob
+  for d in "$SKILLS_DIR"/*/; do [ -f "${d}SKILL.md" ] && SRC_SKILLS=$((SRC_SKILLS+1)) || true; done
+  shopt -u nullglob
+  if [ "$SRC_SKILLS" -gt 0 ]; then
+    mv "$SKILLS_DIR" "${SKILLS_DIR}.moved.$$" 2>/dev/null && rm -rf "${SKILLS_DIR}.moved.$$"
+    ok "custom skills folder removed from beside the script — skills live in $SKILLS_DEST now"
+  else
+    warn "no SKILL.md files in '$SKILLS_DIR' (expected layout: skill-name/SKILL.md) — folder LEFT IN PLACE so you can fix the layout; nothing useful was installed from it"
+  fi
 fi
 
 # (3) canonical repo: add/replace on every run (repo wins same-named)
