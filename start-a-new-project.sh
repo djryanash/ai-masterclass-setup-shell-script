@@ -242,7 +242,12 @@ if [ "$DRY_RUN" = 0 ]; then
   } >> "$LOG_FILE"
   exec > >(tee -a "$LOG_FILE") 2>&1
   info "verbose install log: $LOG_FILE — attach this file when asking for help"
-  trap '_rc=$?; log_scrub; if [ "$_rc" -ne 0 ]; then printf "  NOTE install ended early (exit code %s) — full log: %s\n" "$_rc" "$LOG_FILE"; fi' EXIT
+  # NOTE is appended DIRECTLY into the log file (not via the tee pipe): on a
+  # fatal exit tee's buffered tail races with log_scrub's rewrite, and the
+  # reason the run died was getting lost (seen live 16 Oct — log ended at the
+  # last successful line with no hint why). Direct append precedes the scrub,
+  # so failed runs tell their story.
+  trap '_rc=$?; if [ "$_rc" -ne 0 ]; then printf "  NOTE install ended early (exit code %s) — see the log tail above for what ran last\n" "$_rc" >>"$LOG_FILE"; fi; log_scrub' EXIT
 fi
 
 # --- OS detection -----------------------------------------------------------
@@ -504,14 +509,20 @@ if [ "$NODE_READY" = 0 ]; then
   export NVM_DIR="$HOME/.nvm"
   if [ ! -s "$NVM_DIR/nvm.sh" ]; then run bash -c "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh | bash" || warn "nvm install script failed — check network, then re-run"; fi
   if [ -s "$NVM_DIR/nvm.sh" ]; then set +u; . "$NVM_DIR/nvm.sh"; set -u; else require_or_skip nvm "nvm install failed — re-run"; fi
-  run nvm install --lts || warn "nvm install --lts failed — check network, then re-run"
+  # nvm.sh + set -u do not mix: every nvm invocation here runs in a set -u
+  # shell, and nvm.sh dereferences variables it sometimes leaves unset
+  # (seen live in Ubuntu 26.04/bash 5.3: `nvm use --lts` died at nvm.sh:3927
+  # with 'PROVIDED_VERSION: unbound variable', killing the whole script in
+  # a fatal error that no `|| true` can catch). So set -u is dropped around
+  # EVERY call to an nvm subcommand and restored right after.
+  set +u; run nvm install --lts || warn "nvm install --lts failed — check network, then re-run"; set -u
   # Belt-and-braces: activate the LTS even when it was already installed
   # (otherwise a system node stays first on PATH), then persist the default.
   if [ "$DRY_RUN" = 1 ]; then
     info "[dry-run] nvm use --lts + nvm alias default lts/*"
   else
-    nvm use --lts >/dev/null 2>&1 || true
-    nvm alias default lts/* >/dev/null 2>&1 || true
+    set +u; nvm use --lts >/dev/null 2>&1 || true; set -u
+    set +u; nvm alias default lts/* >/dev/null 2>&1 || true; set -u
   fi
   require_or_skip node "node still missing after nvm install — open a NEW terminal and re-run (nvm needs a fresh shell PATH)"
   ok "node $(node -v) / npm $(npm -v)"
