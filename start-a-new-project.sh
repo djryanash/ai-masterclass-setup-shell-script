@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16D"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16E"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -561,7 +561,15 @@ else
     fi
   fi
   if have ollama; then ok "ollama present"; else
-    if run bash -c "curl -fsSL https://ollama.com/install.sh | sh"; then ok "ollama installed"; else
+    if run bash -c "curl -fsSL https://ollama.com/install.sh | sh"; then
+      ok "ollama installed"
+      # The installer prints 'WARNING: Unable to detect NVIDIA/AMD GPU...' on
+      # machines without a supported GPU (Docker containers, WSL, older
+      # laptops) and offers to install lspci/lshw. Harmless for this class:
+      # inference goes through ollama-cloud (the remote API), so local GPU
+      # hardware is never used or needed. Reassure the noob right here.
+      info "(GPU warning from the installer? Expected and harmless — the class uses ollama-cloud, the remote API, so GPUs never matter here)"
+    else
       warn "ollama installer failed — fix with 'sudo apt-get install zstd' and re-run. Cloud models via Pi + API key still work without the local daemon."
     fi
   fi
