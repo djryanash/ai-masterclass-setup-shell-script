@@ -41,7 +41,7 @@
 set -euo pipefail
 
 # --- tunables ---------------------------------------------------------------
-SCRIPT_REV="2026-10-16C"             # bump on every script change; first thing to ask a student
+SCRIPT_REV="2026-10-16D"             # bump on every script change; first thing to ask a student
                                       # reporting trouble — also printed in the installation log header
 NVM_VERSION="v0.40.3"                 # pin for reproducibility; bump if class notes say so
 PI_PACKAGE="@earendil-works/pi-coding-agent"   # the real Pi (bin 'pi'); @pi-dev/pi does NOT exist on npm
@@ -621,42 +621,69 @@ if have vercel; then ok "vercel CLI present"; else
 fi
 require_or_skip vercel "Vercel CLI missing after install — re-run or 'npm i -g vercel@latest' manually"
 
-# --- 7b. Ryan's agent skills -> ~/.pi/agent/skills/ -------------------------
+# --- 7b. Agent skills -> ~/.pi/agent/skills (canonical: ryans-agent-skills repo)
 # Pi auto-discovers skills here at launch; no registration step needed.
+# Precedence (decided 16 Oct):
+#   1. --skills-dir=/path     explicit override, beats everything
+#   2. CLONE from the canonical repo on EVERY run — students always get the
+#      latest skills, even mid-term edits. Depth-1 clone into a per-run temp
+#      dir, copied over the destination (additive-overwrite: same-named skills
+#      updated; skills removed from the repo linger locally; anything else in
+#      ~/.pi/agent/skills is untouched), temp dir removed.
+#   3. local folder fallback (beside script, ~, ~/Downloads) for offline runs —
+#      copy-then-remove-source, exactly as the zip flow always worked.
+# Clone/copy failure is a warning, never fatal: Pi runs fine without skills.
 PI_AGENT_DIR="$HOME/.pi/agent"
 SKILLS_DEST="$PI_AGENT_DIR/skills"
+SKILLS_REPO="https://github.com/djryanash/ryans-agent-skills.git"
+SKILLS_COUNTED=0   # shared counter for the SKILL.md census below
+skill_census() {  # counts SKILL.md-bearing folders in $SKILLS_DEST into SKILLS_COUNTED
+  SKILLS_COUNTED=0
+  shopt -s nullglob   # no subdirs -> zero iterations, not one with a literal '*' path
+  for d in "$SKILLS_DEST"/*/; do [ -f "${d}SKILL.md" ] && SKILLS_COUNTED=$((SKILLS_COUNTED+1)) || true; done
+  shopt -u nullglob
+}
 run mkdir -p "$SKILLS_DEST"
-if [ -z "$SKILLS_DIR" ]; then
+CLONE_DIR="${TMPDIR:-/tmp}/skills-clone.$$.${RANDOM}"
+CLONE_OK=0
+if [ "$DRY_RUN" = 1 ]; then
+  info "[dry-run] would clone $SKILLS_REPO (depth 1) and copy its contents over $SKILLS_DEST/ (additive-overwrite)"
+elif probe git clone --depth 1 "$SKILLS_REPO" "$CLONE_DIR"; then
+  rm -rf "$CLONE_DIR/.git"                     # plain skills folder, no .git in the destination
+  cp -R "$CLONE_DIR/." "$SKILLS_DEST/"
+  skill_census
+  ok "agent skills updated from $SKILLS_REPO: $SKILLS_COUNTED skills with SKILL.md in $SKILLS_DEST"
+  [ "$SKILLS_COUNTED" -gt 0 ] || warn "clone succeeded but no SKILL.md found in the copied folders — check the repo layout (skill-name/SKILL.md)"
+  CLONE_OK=1
+else
+  warn "could not clone skills repo $SKILLS_REPO — falling back to a local skills folder if one is present (Pi runs fine without skills)"
+fi
+rm -rf "$CLONE_DIR"
+if [ "$CLONE_OK" = 0 ] && [ -z "$SKILLS_DIR" ]; then
   for cand in "$SCRIPT_ABS/ryans-ai-agent-skills" "$HOME/ryans-ai-agent-skills" "$HOME/Downloads/ryans-ai-agent-skills"; do
     if [ -d "$cand" ]; then SKILLS_DIR="$cand"; break; fi
   done
 fi
-if [ -n "$SKILLS_DIR" ] && [ -d "$SKILLS_DIR" ]; then
+if [ "$CLONE_OK" = 0 ] && [ -n "$SKILLS_DIR" ] && [ -d "$SKILLS_DIR" ]; then
   if [ "$DRY_RUN" = 1 ]; then
     info "[dry-run] would MOVE skills from '$SKILLS_DIR' into $SKILLS_DEST/ (source removed afterwards; overwrites same-named skills)"
   else
     cp -R "$SKILLS_DIR/." "$SKILLS_DEST/"
-    SKILL_COUNT=0
-    shopt -s nullglob   # no subdirs -> zero iterations, not one with a literal '*' path
-    for d in "$SKILLS_DEST"/*/; do [ -f "${d}SKILL.md" ] && SKILL_COUNT=$((SKILL_COUNT+1)) || true; done
-    shopt -u nullglob
-    ok "agent skills installed: $SKILL_COUNT skills with SKILL.md in $SKILLS_DEST (moved from: $SKILLS_DIR)"
-    [ "$SKILL_COUNT" -gt 0 ] || warn "no SKILL.md found in copied folders — check the skills folder layout (skill-name/SKILL.md); moving would have deleted the source"
     # Copy-then-move (same volume => atomic rename via mv); the source folder
     # must NOT remain behind once skills are installed. On re-runs the source
     # is already gone (moved previously), which is the expected state.
     mv "$SKILLS_DIR" "${SKILLS_DIR}.moved.$$" 2>/dev/null && rm -rf "${SKILLS_DIR}.moved.$$"
-    ok "source skills folder removed — skills live only in ~/.pi/agent/skills now"
+    skill_census
+    ok "agent skills installed locally: $SKILLS_COUNTED skills with SKILL.md in $SKILLS_DEST (moved from: $SKILLS_DIR)"
   fi
-else
-  DEST_SKILLS=0
-  shopt -s nullglob
-  for d in "$SKILLS_DEST"/*/; do [ -f "${d}SKILL.md" ] && DEST_SKILLS=$((DEST_SKILLS+1)) || true; done
-  shopt -u nullglob
-  if [ "$DEST_SKILLS" -gt 0 ]; then
-    ok "skills already installed in ~/.pi/agent/skills ($DEST_SKILLS skills) — nothing to move; update kits by replacing folders there"
+elif [ "$CLONE_OK" = 0 ]; then
+  skill_census
+  if [ "$DRY_RUN" = 1 ]; then
+    info "[dry-run] $SKILLS_DEST currently holds $SKILLS_COUNTED skills — the clone step would refresh them from $SKILLS_REPO"
+  elif [ "$SKILLS_COUNTED" -gt 0 ]; then
+    ok "skills already installed in $SKILLS_DEST ($SKILLS_COUNTED skills) — clone failed earlier, keeping what is there"
   else
-    warn "skills folder 'ryans-ai-agent-skills' not found (looked beside start-a-new-project.sh, ~, ~/Downloads) and ~/.pi/agent/skills is empty — re-run with --skills-dir=/path to add Ryan's skills. Pi runs fine without them."
+    warn "no skills available (repo clone failed; no local 'ryans-ai-agent-skills' found beside start-a-new-project.sh, ~, ~/Downloads; --skills-dir not given) — Pi runs fine without them. Re-run once the network is up."
   fi
 fi
 
